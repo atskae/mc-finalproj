@@ -5,7 +5,7 @@
 #include "string.h"
 
 #define NUMROW_LED 8 // number of rows in the LED pendulum display 
-#define NUMCOL_LED 8 // number of columns in the LED pendulum display
+#define NUMCOL_LED 20 // number of columns in the LED pendulum display
 char display[NUMCOL_LED]; // each element represent a column in the LED pendulum; msut convert gameBoard to display
 
 enum object{empty, s_left, s_right, s_up, s_down, food, invalid}; // invalid is used moveSnake() if collision occurs
@@ -40,6 +40,34 @@ void printDir(enum object dir) {
 
 }
 
+// converts the matrix into a char array
+void convertBoard() {
+
+	char d; // a single column on the LED
+	int shift;
+
+	for(int col=0; col<NUMCOL_LED; col++) { // must iterate by column since each char in the result array represents a column in the LED
+		d = 0x00; // reset
+		shift = 0;			
+		for(int row=NUMROW_LED-1; row>=0; row--) { // start from the bottom of each column
+			if(gameBoard[row][col] == empty) d &= ~(0x1 << shift); // clear the bit
+			else d |= (0x1 << shift); // set the bit	
+			shift++;
+		}
+		display[col] = d;
+	}
+
+	// test print
+	for(int shift=NUMROW_LED-1; shift>=0; shift--) {
+		for(int col=0; col<NUMCOL_LED; col++) { // for each bit
+			if(display[col] & (0x1 << shift)) printf("*");
+			else printf(" ");	
+		}	
+		printf("\n");
+	}
+
+}
+
 void printBoard() {
 
 	printf("-----\n");	
@@ -49,7 +77,7 @@ void printBoard() {
 		for(int j=0; j<NUMCOL_LED; j++) {
 			switch(gameBoard[i][j]) {
 				case empty:
-					printf("0 ");
+					printf("  ");
 					break;
 				case s_left:
 					printf("< ");
@@ -128,7 +156,7 @@ enum object moveSnake(int count, int row, int col, enum object dir) { // count =
 				printf("Invalid\n");
 				return invalid;
 		}
-		printf("old head (%i,%i), new head (%i,%i))\n", row, col, new_row, new_col);
+//		printf("old head (%i,%i), new head (%i,%i))\n", row, col, new_row, new_col);
 		if(new_row >= NUMROW_LED || new_row < 0 || new_col < 0 || new_col >= NUMCOL_LED) {
 			printf("Out of bounds.\n");
 			return invalid;
@@ -224,7 +252,6 @@ enum object moveSnake(int count, int row, int col, enum object dir) { // count =
 	
 	}
 
-	if(new_row == 3) printf("FUk %i %i to %i %i with dir %i\n", row, col, new_row, new_col, new_dir);
 	gameBoard[new_row][new_col] = new_dir;
 	return old_dir;
 }
@@ -265,7 +292,7 @@ void updateBoard(enum object dir) {
 		}
 
 		// empty the snake at the current tail position
-		printf("tail setting (%i %i) empty\n", tail_pos[0], tail_pos[1]);
+//		printf("tail setting (%i %i) empty\n", tail_pos[0], tail_pos[1]);
 		gameBoard[tail_pos[0]][tail_pos[1]] = empty;
 		// update tail position
 		tail_pos[0] = new_row;
@@ -300,8 +327,8 @@ void newGame() {
 	gameBoard[food_pos[0]][food_pos[1]] = food;
 
 	printf("Initialized board\n");	
-	printBoard();
-
+//	printBoard();
+	convertBoard();
 }
 
 int main() {
@@ -320,17 +347,16 @@ int main() {
 
 	char input[10];
 	while(1) {
-		printf("type: j, i, l, k\n");
+		printf("type: j=left, i=up, l=left, k=down, q=quit\n");
 		scanf("%s", input);
 		if(strcmp(input, "i") == 0) updateBoard(s_up);
 		else if(strcmp(input, "k") == 0) updateBoard(s_down);	
 		else if(strcmp(input, "j") == 0) updateBoard(s_left);
 		else if(strcmp(input, "l") == 0) updateBoard(s_right);	
-		else {
-			printf("%s is invalid.\n", input);
-			break;
-		}
-		printBoard();
+		else if(strcmp(input, "q") == 0) break;
+		else printf("%s is invalid.\n", input);	
+		//printBoard();
+		convertBoard();
 	}
 	
 	return 0;	
