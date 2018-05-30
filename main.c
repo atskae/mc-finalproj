@@ -10,6 +10,7 @@
 #include "time.h" // to generate random positions in the gameBoard
 #include "string.h"
 
+#define PORTK 9
 #define PORTL 10
 #define PORTM 11
 
@@ -48,13 +49,6 @@ void sysConfig() {
 	// 0:input 1:output
 	GPIO_PORTM_DIR_R |= 0xFF;  // PM(7:0) input
 	GPIO_PORTM_DEN_R |= 0xFF;  // enable pins PM(7:0)
-	// configure interrupts for Port M
-	GPIO_PORTM_AHB_IS_R &= ~0x01; // interrupt sense ; "0" edge-sensitive, "1" level-sensitive	
-	GPIO_PORTM_AHB_IBE_R &= ~0x1; // interrupt both edges ; "0" single-edge
-	GPIO_PORTM_AHB_IEV_R |= 0x01; // interrupt event ; "1" rising edges
-	GPIO_PORTM_AHB_ICR_R |= 0x01; // interrupt clear
-	GPIO_PORTM_AHB_IM_R |= 0x01; // mask register
-	NVIC_END0_R |= (1<<PORTM); // enable PORTM interrupt in NVIC 
 
 	// Port L controls the left/right signals of the pendulum and the 7-segment display	
 	SYSCTL_RCGCGPIO_R |= (1 << PORTL); // enable clock for port L
@@ -62,6 +56,20 @@ void sysConfig() {
 	GPIO_PORTL_DIR_R |= 0x03;  // PL(0:1) output to the 7-segment display
 	GPIO_PORTL_DIR_R &= ~0x04;  // PL(2) input (reads R/L signal)
 	GPIO_PORTL_DEN_R |= 0x07;  // enable pins (3:0)	
+	// configure interrupts for Port L
+	GPIO_PORTL_AHB_IS_R &= ~0x01; // interrupt sense ; "0" edge-sensitive, "1" level-sensitive	
+	GPIO_PORTL_AHB_IBE_R &= ~0x1; // interrupt both edges ; "0" single-edge
+	GPIO_PORTL_AHB_IEV_R |= 0x01; // interrupt event ; "1" rising edges
+	GPIO_PORTL_AHB_ICR_R |= 0x01; // interrupt clear
+	GPIO_PORTL_AHB_IM_R |= 0x01; // mask register
+	NVIC_END0_R |= (1<<PORTL); // enable PORTM interrupt in NVIC 
+
+	// Port K is a buffer that holds the score (which is sent to the 7-segment display)
+	SYSCTL_RCGCGPIO_R |= (1 << PORTK); // enable clock
+	while (!(SYSCTL_PRGPIO_R & (1 << PORTK))); // wait for port to be ready
+	// 0:input 1:output
+	GPIO_PORTK_DIR_R |= 0xFF;  // output 
+	GPIO_PORTK_DEN_R |= 0xFF;  // enable pins
 
 	// Add UART config here	
 }
@@ -87,6 +95,54 @@ void timerWait(unsigned short usec) {
 	TIMER0_ICR_R |= (1<<0); // clear interrupt flag
 	TIMER0_CTL_R &= ~0x1; // disable timer
 
+}
+
+// Display game score on 4 digit 7-segment display
+// Port L(1:0) are the enable bits for the 7-segment display
+// Port K serves as a buffer to hold the score for the 7-segment display 
+void displayValue(int score) {
+    int digits[4] = {0}; // initialize to 0
+    int i, scoreAux = score;
+
+    // Get digits
+    for (i = 4; i > 0; i--) {
+        digits[i-1] = scoreAux % 10;
+        scoreAux = scoreAux / 10;
+    }
+
+    // Output digits
+
+    // First 2 digits
+    // Enable: PL(1) = EN(1) := H
+    GPIO_PORTL_DATA_R |= (1 << 1);
+    // Set data
+    if (score >= 1000) {
+        //printf("digit[3] %d \n", digits[3]);
+        GPIO_PORTK_DATA_R |= digits[0] << 4;
+    }
+    if (score >= 100) {
+        //printf("digit[2] %d \n", digits[2]);
+        GPIO_PORTK_DATA_R |= digits[1];
+    }
+
+    // Latch mode (disable)
+    GPIO_PORTL_DATA_R &= ~(1 << 1);
+    GPIO_PORTK_DATA_R = 0x00;
+
+    // Last 2 digits
+    // Enable: PL(0) = EN(0) := H
+    GPIO_PORTL_DATA_R |= (1 << 0);
+    // Set data
+    if (score >= 10) {
+        //printf("digit[1] %d \n", digits[1]);
+        GPIO_PORTK_DATA_R |= digits[2] << 4;
+    }
+    if (score >= 0) {
+        //printf("digit[0] %d \n", digits[0]);
+        GPIO_PORTK_DATA_R |= digits[3];
+    }
+    // Latch mode (disable)
+    GPIO_PORTL_DATA_R &= ~(1<<0);
 }
 
 /*
@@ -122,7 +178,7 @@ void printDir(enum object dir) {
 void convertBoard() {
 
 	char d; // a single column on the LED
-	int shift;
+	t shift;
 
 	for(int col=0; col<NUMCOL_LED; col++) { // must iterate by column since each char in the result array represents a column in the LED
 		d = 0x00; // reset
