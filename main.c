@@ -13,6 +13,10 @@
 
 #include "int_handler.h" // custom interrupt handler
 
+/*global variables*/
+volatile unsigned char gucNewData = 0;
+volatile unsigned char gucRxChar = 0;
+
 #define PORTK 9
 #define PORTL 10
 #define PORTM 11
@@ -44,7 +48,12 @@ char incrLength = 0; // if snake gets food, this is set to "1"
 
 */
 
-void portConfig() {
+// Configures GPIO ports, timers, and UART ; enables interrupts
+void sysConfig() {
+
+    time_t t;
+    srand( (unsigned) time(&t) ); // init random number generator
+
     // Port M controls the pendulum display
     SYSCTL_RCGCGPIO_R |= (1 << PORTM); // enable clock for port M
     while (!(SYSCTL_PRGPIO_R & (1 << PORTM))); // wait for port to be ready
@@ -73,18 +82,6 @@ void portConfig() {
     GPIO_PORTK_DIR_R |= 0xFF;  // output
     GPIO_PORTK_DEN_R |= 0xFF;  // enable pins
 
-    // Port P is used for UART; P(0) receives, P(1) transmits (datasheet, p.1164)
-    SYSCTL_RCGCGPIO_R |= (1 << PORTP); // enable clock
-    while (!(SYSCTL_PRGPIO_R & (1 << PORTP))); // wait for port to be ready
-    // 0:input 1:output
-    GPIO_PORTP_DIR_R &= ~0x01; // pin 0 recieves ; input
-    GPIO_PORTP_DIR_R |= 0x02; // pin 1 transmits ; output
-    GPIO_PORTP_DEN_R &= ~0x03; // disable digital enable
-    GPIO_PORTP_AFSEL_R |= 0xFF; // enable alternate function select
-    GPIO_PORTP_PCTL_R |= 0x11; // assign pins to UART signal
-}
-
-void timerConfig() {
     // Timer config
     SYSCTL_RCGCTIMER_R |= 0x1; // activate timer clock
     while(!(SYSCTL_PRTIMER_R & 0x1)); // wait to be ready
@@ -93,37 +90,37 @@ void timerConfig() {
     TIMER0_TAMR_R  |= 0x1; // down, one-shot
     TIMER0_TAPR_R  = PRESCALER; // prescaler
     TIMER0_IMR_R |= 0x01; // enables interrupt when time-out occurs ; clear interrupt with TIMER0_ICR_R
-}
 
-void UARTConfig() {
+    // UART config ; must use UART Module 6
+    // Port P(0) receives, P(1) transmits (datasheet, p.1164)
+    SYSCTL_RCGCGPIO_R |= (1 << PORTP); // enable clock
+    while (!(SYSCTL_PRGPIO_R & (1 << PORTP))); // wait for port to be ready
+    // 0:input 1:output
+    GPIO_PORTP_DIR_R &= ~0x1; // pin 0 recieves ; input
+    GPIO_PORTP_DEN_R |= 0x1; // disable digital enable
+    GPIO_PORTP_AFSEL_R |= 0xFF; // enable alternate function select
+    GPIO_PORTP_PCTL_R |= 0x11; // assign pins to UART signal
+
     // configure UART Module 6
     SYSCTL_RCGCUART_R |= 0x40;// "UART Clock Gating Control"
     while(!(SYSCTL_PPUART_R & (1 << 6))); // wait until UART module 6 is ready
     UART6_CTL_R &= ~0x01; // disable UART module for configuration
-    UART6_IBRD_R = 0x00; // set the integer portion of BRD
-    UART6_FBRD_R = 0x00; // set fracttional portion of BRD
-    UART6_LCRH_R = 0x60; // UART line control ; set data length to 8 bits, disable FIFOs and parity bit, 1 stop bit
-    UART6_IM_R |= 0x04; // enable interrupt when UART receives a value from the keyboard ; clear interrupt with UART6_ICR_R
-    UART6_CTL_R |= 0x01; // enable UART module
+    UART6_IBRD_R = 104; // set the integer portion of BRD ; for bit-rate = 9600
+    UART6_FBRD_R = 10; // set fractional portion of BRD
+    UART6_LCRH_R |= 0x66; // UART line control ; set data length to 8 bits, enable FIFOs and parity bit, 1 stop bit
+    UART6_IM_R |= 0x10; // enable interrupt when UART receives a value from the keyboard ; clear interrupt with UART6_ICR_R
+    UART6_CTL_R |= 0x201; // enable UART module
+    NVIC_EN1_R |= (1<<(59-32)); // enable PORTL interrupt in NVIC
 }
 
-// Configures GPIO ports, timers, and UART ; enables interrupts
-void sysConfig() {
-    time_t t;
-    srand( (unsigned) time(&t) ); // init random number generator
-
-    portConfig();
-    timerConfig();
-    UARTConfig();
-}
 
 void timerWait(unsigned short usec) {
     unsigned short loadValue = (unsigned short) ceil((usec * 1.0e-6 * FCLK) / (PRESCALER+1)) - 1;
-    TIMER0_TAILR_R = loadValue; // set interval load value
-    TIMER0_CTL_R   |= 0x1; // start timer
-    while(!(TIMER0_RIS_R & (1<<0))); // wait for time-out, blocking
-    TIMER0_ICR_R |= (1<<0); // clear interrupt flag
-    TIMER0_CTL_R &= ~0x1; // disable timer
+        TIMER0_TAILR_R = loadValue; // set interval load value
+        TIMER0_CTL_R   |= 0x1; // start timer
+        while(!(TIMER0_RIS_R & (1<<0))); // wait for time-out, blocking
+        TIMER0_ICR_R |= (1<<0); // clear interrupt flag
+        TIMER0_CTL_R &= ~0x1; // disable timer
 }
 
 // Display game score on 4 digit 7-segment display
@@ -181,6 +178,7 @@ void displayValue(int score) {
 */
 
 void printDir(object dir) {
+
     switch(dir) {
         case s_left:
             printf("left\n");
@@ -198,6 +196,8 @@ void printDir(object dir) {
             printf("Invalid direction %i\n", dir);
             return;
     }
+
+
 }
 
 // converts the matrix into a char array
@@ -318,8 +318,7 @@ object moveSnake(int count, int row, int col, object dir) {
                 printf("Invalid\n");
                 return invalid;
         }
-        
-        //printf("old head (%i,%i), new head (%i,%i))\n", row, col, new_row, new_col);
+    printf("old head (%i,%i), new head (%i,%i))\n", row, col, new_row, new_col);
         if(new_row >= NUMROW_LED || new_row < 0 || new_col < 0 || new_col >= NUMCOL_LED) {
             printf("Out of bounds.\n");
             return invalid;
@@ -334,26 +333,24 @@ object moveSnake(int count, int row, int col, object dir) {
         }
          else if(gameBoard[new_row][new_col] == empty) {
             gameBoard[new_row][new_col] = dir;
-            if(gameBoard[row][col] != dir) {
+        if(gameBoard[row][col] != dir) {
                 gameBoard[row][col] = dir; // if the direction is different from the previous
                 return dir;
-            }
-            else {
-                return gameBoard[row][col];  // return the old direction to the callee before callee overwrites the position
-            }        
+        }
+        else return gameBoard[row][col];  // return the old direction to the callee before callee overwrites the position
         }
          else {
             printf("Snake crashed into itself.\n");
             return invalid;
         }
-    } // if at snake head ; end
+    }
 
     // obtain the direction of this position
     object new_dir;
 
     switch(gameBoard[row][col]) {
         case s_left:
-            new_dir = moveSnake(count+1, row, col-1, dir);
+            new_dir    = moveSnake(count+1, row, col-1, dir);
             break;
         case s_right:
             new_dir = moveSnake(count+1, row, col+1, dir);
@@ -421,13 +418,15 @@ object moveSnake(int count, int row, int col, object dir) {
 }
 
 void updateBoard(object dir) {
-    // printf("updateBoard() dir = ");
-    // printDir(dir);
+    printf("updateBoard() dir = ");
+    printDir(dir);
 
     object new_dir = moveSnake(1, tail_pos[0], tail_pos[1], dir);
     if(new_dir == invalid) exit(0);
 
-    if(incrLength) {
+    //gameBoard[new_row][new_col] = new_dir;
+
+    if(incrLength){
         // reset
         incrLength = 0;
         addFood();
@@ -454,7 +453,7 @@ void updateBoard(object dir) {
         }
 
         // empty the snake at the current tail position
-        printf("tail setting (%i %i) empty\n", tail_pos[0], tail_pos[1]);
+    printf("tail setting (%i %i) empty\n", tail_pos[0], tail_pos[1]);
         gameBoard[tail_pos[0]][tail_pos[1]] = empty;
         // update tail position
         tail_pos[0] = new_row;
@@ -485,52 +484,75 @@ void newGame() {
 
     // place food on random position on board
     addFood();
-	gameBoard[food_pos[0]][food_pos[1]] = food;
+gameBoard[food_pos[0]][food_pos[1]] = food;
 
     printf("Initialized board\n");
-	//printBoard();
+printBoard();
     convertBoard();
 }
 
 int main(void) {
-
     sysConfig();
     newGame();
-    
-    object dirs[] = {s_up, s_up, s_up, s_right, s_right, s_down, s_down, s_left, s_left, s_left};
+    object dirs[10] = {s_up, s_up, s_up, s_right, s_right, s_down, s_down, s_left, s_left, s_left};
 
-    int i, left, size;
-    size = sizeof(dirs)/sizeof(object);
-
-    for(i = 0; i < size; i++) {
-        updateBoard(dirs[i]);
-        convertBoard();
-        while(1) {
-                // If one and not left
-                if (GPIO_PORTL_DATA_R && !left) {
-                    // left edge
-                    left = 1;
-                    GPIO_PORTM_DATA_R = 0x00;
-                    for(i = 0; i < STREAMSIZE; i++) {
-                        GPIO_PORTM_DATA_R = display[i];
-                        timerWait(1950);
-                    }
-                    GPIO_PORTM_DATA_R = 0x00;
-                }
-                // if zero and left
-                else if (!GPIO_PORTL_DATA_R && left) {
-                    // right edge
-                    left = 0;
-                    GPIO_PORTM_DATA_R = 0x00;
-                    for(i = STREAMSIZE-1; i >= 0; i--) {
-                        GPIO_PORTM_DATA_R = display[i];
-                        timerWait(1950);
-                    }
-                    GPIO_PORTM_DATA_R = 0x00;
-                }
+    while(1) {
+        if (gucNewData) {
+            gucNewData = 0;
+            printf("%c",gucRxChar); // output interrupt
+            switch(gucRxChar) {
+                case '8':
+                    updateBoard(s_up);
+                    break;
+                case '6':
+                    updateBoard(s_right);
+                    break;
+                case '4':
+                    updateBoard(s_left);
+                    break;
+                case '5':
+                    updateBoard(s_down);
+                    break;
             }
+            printBoard();
+            fflush(stdout);
+            UART6_DR_R = 0;
+        }
     }
 
+//    int i, left, size;
+//    size = sizeof(dirs)/sizeof(object);
+//    for(i = 0; i < size; i++) {
+//        updateBoard(dirs[i]);
+//        convertBoard();
+//            while(1) {
+//                // If one and not left
+//                if (GPIO_PORTL_DATA_R && !left)
+//                {
+//                    // left edge
+//                    left = 1;
+//                    GPIO_PORTM_DATA_R = 0x00;
+//                    for(i = 0; i < STREAMSIZE; i++)
+//                    {
+//                        GPIO_PORTM_DATA_R = display[i];
+//                        timerWait(1950);
+//                    }
+//                    GPIO_PORTM_DATA_R = 0x00;
+//                }
+//                // if zero and left
+//                else if (!GPIO_PORTL_DATA_R && left)
+//                {
+//                    // right edge
+//                    left = 0;
+//                    GPIO_PORTM_DATA_R = 0x00;
+//                    for(i = STREAMSIZE-1; i >= 0; i--) {
+//                        GPIO_PORTM_DATA_R = display[i];
+//                        timerWait(1950);
+//                    }
+//                    GPIO_PORTM_DATA_R = 0x00;
+//                }
+//            }
+//    }
 //            int left = 0, i;
 //            time_t t;
 //            char board[STREAMSIZE] = {0xFF, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81,
@@ -648,6 +670,8 @@ int main(void) {
 //                }
 //            }
 //        #endif
+
+
 
 
 //char input[10];
