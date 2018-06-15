@@ -13,18 +13,27 @@
 
 #include "int_handler.h" // custom interrupt handler
 
-/*global variables*/
+/*interrupt variables*/
+//UART
 volatile unsigned char gucNewData = 0;
 volatile unsigned char gucRxChar = 0;
+
+// RL Signal from Port L(2)
+volatile unsigned char displayed_intro = 0;
+volatile unsigned char left_edge = 0;
+
+// timer interrupts
+volatile unsigned char time_out = 0; // for general counting
+volatile unsigned char update_board = 0; // timer is trigged at the same intervals
 
 #define PORTK 9
 #define PORTL 10
 #define PORTM 11
 #define PORTP 13
 
-#define TMAX 0.01
-#define FCLK 16.0E6 // CPU frequency
-#define PRESCALER 2
+//#define TMAX 0.01
+//#define FCLK 16.0E6 // CPU frequency
+//#define PRESCALER 2
 
 #define SEGMENT 1000 // us
 //#define S // S(Snake) I(initial screen)
@@ -32,15 +41,18 @@ volatile unsigned char gucRxChar = 0;
 #define STREAMSIZE 29
 
 #define NUMROW_LED 8 // number of rows in the LED pendulum display
-#define NUMCOL_LED 29 // number of columns in the LED pendulum display
+//#define NUMCOL_LED 29 // number of columns in the LED pendulum display
 
 char display[NUMCOL_LED]; // each element represent a column in the LED pendulum; msut convert gameBoard to display
-typedef enum {empty, s_left, s_right, s_up, s_down, food, invalid} object; // invalid is used moveSnake() if collision occurs
+//typedef enum {empty, s_left, s_right, s_up, s_down, food, invalid} object; // invalid is used moveSnake() if collision occurs
 object gameBoard[NUMROW_LED][NUMCOL_LED];
 int snakeLength = 1;
 int tail_pos[2] = {7, 0}; // start at bottom left-most position on the screen
 int food_pos[2] = {0, 0}; // position of food ; variable used to remove food in constant time
 char incrLength = 0; // if snake gets food, this is set to "1"
+char initial_screen[STREAMSIZE] = {0x00, 0x00, 0xFF, 0xA0, 0xE0, 0x00, 0xFF, 0xA0,
+                                0xF0, 0x0F, 0x00, 0xFF, 0x91, 0x91, 0x00, 0xF1, 0x91, 0x9F,
+                                0x00, 0xF1, 0x91, 0x9F, 0x00, 0x00, 0xFF, 0x40, 0x00};
 
 /*
 
@@ -48,55 +60,69 @@ char incrLength = 0; // if snake gets food, this is set to "1"
 
 */
 
-// Configures GPIO ports, timers, and UART ; enables interrupts
-void sysConfig() {
-
-    time_t t;
-    srand( (unsigned) time(&t) ); // init random number generator
-
+void portConfig() {
     // Port M controls the pendulum display
     SYSCTL_RCGCGPIO_R |= (1 << PORTM); // enable clock for port M
     while (!(SYSCTL_PRGPIO_R & (1 << PORTM))); // wait for port to be ready
     // 0:input 1:output
-    GPIO_PORTM_DIR_R |= 0xFF;  // PM(7:0) input
+    GPIO_PORTM_DIR_R |= 0xFF;  // PM(7:0) output
     GPIO_PORTM_DEN_R |= 0xFF;  // enable pins PM(7:0)
 
-    // Port L controls the left/right signals of the pendulum and the 7-segment display
+    // Port L(0) controls the left/right signals of the pendulum and the 7-segment display
     SYSCTL_RCGCGPIO_R |= (1 << PORTL); // enable clock for port L
     while (!(SYSCTL_PRGPIO_R & (1 << PORTL))); // wait for port to be ready
-    GPIO_PORTL_DIR_R |= 0x03;  // PL(0:1) output to the 7-segment display
-    GPIO_PORTL_DIR_R &= ~0x04;  // PL(2) input (reads R/L signal)
-    GPIO_PORTL_DEN_R |= 0x07;  // enable pins (3:0)
+    //GPIO_PORTL_DIR_R |= 0x03;  // PL(0:1) output to the 7-segment display
+    GPIO_PORTL_DIR_R &= ~0x01;  // PL(0) input (reads R/L signal)
+    GPIO_PORTL_DEN_R |= 0x01;  // enable pin(0)
     // configure interrupts for Port L
-    GPIO_PORTL_IS_R &= ~0x01; // interrupt sense ; "0" edge-sensitive, "1" level-sensitive
-    GPIO_PORTL_IBE_R &= ~0x1; // interrupt both edges ; "0" single-edge
-    GPIO_PORTL_IEV_R |= 0x01; // interrupt event ; "1" rising edges
-    GPIO_PORTL_ICR_R |= 0x01; // interrupt clear
-    GPIO_PORTL_IM_R |= 0x01; // mask register
-    NVIC_EN0_R |= (1<<PORTL); // enable PORTL interrupt in NVIC
+    GPIO_PORTL_IM_R &= 0x00; // clear to config interrupts
+    GPIO_PORTL_IS_R = 0x0; // interrupt sense ; "0" edge-sensitive, "1" level-sensitive
+    GPIO_PORTL_IBE_R = 0x1; // "1" interrupt both edges ; "0" single-edge
+    //GPIO_PORTL_IEV_R |= 0x01; // interrupt event ; "1" rising edges
+    GPIO_PORTL_ICR_R |= (1<<0); // interrupt clear
+    GPIO_PORTL_RIS_R = 0x0;
+    GPIO_PORTL_IM_R |= (1<<0); // allows interrupt to be sent to interrupt controller
+    NVIC_EN1_R |= (1<<(53-32));
 
-    // Port K is a buffer that holds the score (which is sent to the 7-segment display)
-    SYSCTL_RCGCGPIO_R |= (1 << PORTK); // enable clock
-    while (!(SYSCTL_PRGPIO_R & (1 << PORTK))); // wait for port to be ready
-    // 0:input 1:output
-    GPIO_PORTK_DIR_R |= 0xFF;  // output
-    GPIO_PORTK_DEN_R |= 0xFF;  // enable pins
+//    // Port K is a buffer that holds the score (which is sent to the 7-segment display)
+//    SYSCTL_RCGCGPIO_R |= (1 << PORTK); // enable clock
+//    while (!(SYSCTL_PRGPIO_R & (1 << PORTK))); // wait for port to be ready
+//    // 0:input 1:output
+//    GPIO_PORTK_DIR_R |= 0xFF;  // output
+//    GPIO_PORTK_DEN_R |= 0xFF;  // enable pins
+}
 
-    // Timer config
-    SYSCTL_RCGCTIMER_R |= 0x1; // activate timer clock
+void timerConfig() {
+
+    SYSCTL_RCGCTIMER_R |= 0x1; // activate timer module 0
     while(!(SYSCTL_PRTIMER_R & 0x1)); // wait to be ready
-    TIMER0_CTL_R   &= ~0x1; // stop timer for config
-    TIMER0_CFG_R   |= 0x4; // 16 bit
-    TIMER0_TAMR_R  |= 0x1; // down, one-shot
-    TIMER0_TAPR_R  = PRESCALER; // prescaler
-    TIMER0_IMR_R |= 0x01; // enables interrupt when time-out occurs ; clear interrupt with TIMER0_ICR_R
 
+    // Timer 0A ; for general use (can measure any time)
+    TIMER0_CTL_R   &= ~0x1; // disable timer A for config
+    TIMER0_TAMR_R  = 0x1; // down, one-shot
+    TIMER0_TAPR_R  = PRESCALER; // prescaler
+    //TIMER0_IMR_R |= 0x01; // enable interrupt to be sent to interrupt controller ; clear interrupt with TIMER0_ICR_R
+   // NVIC_EN0_R |= (1<<19); // allow interrupt controller to receive this interrupt
+
+//    //Timer 0B ; always measures the same (but configurable) time ; used to update the screen at the same intervals
+//    TIMER0_CTL_R    &= ~(1<<8); // disable timer B for config
+//    TIMER0_TBMR_R  = 0x2; // down, periodic timer
+//    TIMER0_TBPR_R  = PRESCALER; // prescaler
+//    TIMER0_IMR_R |= (1<<8); // enable interrupt to be sent to interrupt controller ; clear interrupt with TIMER0_ICR_R
+//    NVIC_EN0_R |= (1<<20); // allow interrupt controller to receive this interrupt
+
+    // timer module 0
+    TIMER0_CFG_R   |= 0x4; // 16 bit
+
+}
+
+void UARTConfig() {
     // UART config ; must use UART Module 6
     // Port P(0) receives, P(1) transmits (datasheet, p.1164)
     SYSCTL_RCGCGPIO_R |= (1 << PORTP); // enable clock
     while (!(SYSCTL_PRGPIO_R & (1 << PORTP))); // wait for port to be ready
     // 0:input 1:output
-    GPIO_PORTP_DIR_R &= ~0x1; // pin 0 recieves ; input
+    GPIO_PORTP_DIR_R |= 0x0; // pin 0 recieves ; input
     GPIO_PORTP_DEN_R |= 0x1; // disable digital enable
     GPIO_PORTP_AFSEL_R |= 0xFF; // enable alternate function select
     GPIO_PORTP_PCTL_R |= 0x11; // assign pins to UART signal
@@ -110,17 +136,17 @@ void sysConfig() {
     UART6_LCRH_R |= 0x66; // UART line control ; set data length to 8 bits, enable FIFOs and parity bit, 1 stop bit
     UART6_IM_R |= 0x10; // enable interrupt when UART receives a value from the keyboard ; clear interrupt with UART6_ICR_R
     UART6_CTL_R |= 0x201; // enable UART module
-    NVIC_EN1_R |= (1<<(59-32)); // enable PORTL interrupt in NVIC
+    NVIC_EN1_R |= (1<<(59-32)); // enable PORTP interrupt in NVIC
 }
 
+// Configures GPIO ports, timers, and UART ; enables interrupts
+void sysConfig() {
+    time_t t;
+    srand( (unsigned) time(&t) ); // init random number generator
 
-void timerWait(unsigned short usec) {
-    unsigned short loadValue = (unsigned short) ceil((usec * 1.0e-6 * FCLK) / (PRESCALER+1)) - 1;
-        TIMER0_TAILR_R = loadValue; // set interval load value
-        TIMER0_CTL_R   |= 0x1; // start timer
-        while(!(TIMER0_RIS_R & (1<<0))); // wait for time-out, blocking
-        TIMER0_ICR_R |= (1<<0); // clear interrupt flag
-        TIMER0_CTL_R &= ~0x1; // disable timer
+    portConfig();
+    timerConfig();
+    UARTConfig();
 }
 
 // Display game score on 4 digit 7-segment display
@@ -318,7 +344,7 @@ object moveSnake(int count, int row, int col, object dir) {
                 printf("Invalid\n");
                 return invalid;
         }
-    printf("old head (%i,%i), new head (%i,%i))\n", row, col, new_row, new_col);
+        //printf("old head (%i,%i), new head (%i,%i))\n", row, col, new_row, new_col);
         if(new_row >= NUMROW_LED || new_row < 0 || new_col < 0 || new_col >= NUMCOL_LED) {
             printf("Out of bounds.\n");
             return invalid;
@@ -327,17 +353,18 @@ object moveSnake(int count, int row, int col, object dir) {
 
             printf("+1\n");
             snakeLength++;
+              //displayValue(++snakeLength); // display new score onto 7-segment display
             incrLength = 1;
             gameBoard[new_row][new_col] = dir;
             return dir;
         }
          else if(gameBoard[new_row][new_col] == empty) {
             gameBoard[new_row][new_col] = dir;
-        if(gameBoard[row][col] != dir) {
+            if(gameBoard[row][col] != dir) {
                 gameBoard[row][col] = dir; // if the direction is different from the previous
                 return dir;
-        }
-        else return gameBoard[row][col];  // return the old direction to the callee before callee overwrites the position
+            }
+            else return gameBoard[row][col];  // return the old direction to the callee before callee overwrites the position
         }
          else {
             printf("Snake crashed into itself.\n");
@@ -350,7 +377,7 @@ object moveSnake(int count, int row, int col, object dir) {
 
     switch(gameBoard[row][col]) {
         case s_left:
-            new_dir    = moveSnake(count+1, row, col-1, dir);
+            new_dir = moveSnake(count+1, row, col-1, dir);
             break;
         case s_right:
             new_dir = moveSnake(count+1, row, col+1, dir);
@@ -471,7 +498,31 @@ void clearBoard() {
     }
 }
 
+void initialScreen() {
+    int i;
+     while (1) {
+           // If one and not left
+           if (left_edge) {
+               // left edge
+               GPIO_PORTM_DATA_R = 0x00;
+               for(i = 0; i < STREAMSIZE; i++)
+               {
+                   GPIO_PORTM_DATA_R = initial_screen[i];
+                   timerWait(1950);
+               }
+               GPIO_PORTM_DATA_R = 0x00;
+           }
+           if(gucRxChar == '1') {
+               break;
+           }
+       }
+}
+
 void newGame() {
+
+    initialScreen();
+    GPIO_PORTM_DATA_R = 0x0;
+
     // init all positions on gameBoard to empty
     clearBoard();
     // place the snake at the bottom left-most position
@@ -484,208 +535,21 @@ void newGame() {
 
     // place food on random position on board
     addFood();
-gameBoard[food_pos[0]][food_pos[1]] = food;
+    gameBoard[food_pos[0]][food_pos[1]] = food;
 
     printf("Initialized board\n");
-printBoard();
+    printBoard();
     convertBoard();
+
+    displayed_intro = 1;
 }
 
 int main(void) {
+
     sysConfig();
     newGame();
-    object dirs[10] = {s_up, s_up, s_up, s_right, s_right, s_down, s_down, s_left, s_left, s_left};
 
     while(1) {
-        if (gucNewData) {
-            gucNewData = 0;
-            printf("%c",gucRxChar); // output interrupt
-            switch(gucRxChar) {
-                case '8':
-                    updateBoard(s_up);
-                    break;
-                case '6':
-                    updateBoard(s_right);
-                    break;
-                case '4':
-                    updateBoard(s_left);
-                    break;
-                case '5':
-                    updateBoard(s_down);
-                    break;
-            }
-            printBoard();
-            fflush(stdout);
-            UART6_DR_R = 0;
-        }
+
     }
-
-//    int i, left, size;
-//    size = sizeof(dirs)/sizeof(object);
-//    for(i = 0; i < size; i++) {
-//        updateBoard(dirs[i]);
-//        convertBoard();
-//            while(1) {
-//                // If one and not left
-//                if (GPIO_PORTL_DATA_R && !left)
-//                {
-//                    // left edge
-//                    left = 1;
-//                    GPIO_PORTM_DATA_R = 0x00;
-//                    for(i = 0; i < STREAMSIZE; i++)
-//                    {
-//                        GPIO_PORTM_DATA_R = display[i];
-//                        timerWait(1950);
-//                    }
-//                    GPIO_PORTM_DATA_R = 0x00;
-//                }
-//                // if zero and left
-//                else if (!GPIO_PORTL_DATA_R && left)
-//                {
-//                    // right edge
-//                    left = 0;
-//                    GPIO_PORTM_DATA_R = 0x00;
-//                    for(i = STREAMSIZE-1; i >= 0; i--) {
-//                        GPIO_PORTM_DATA_R = display[i];
-//                        timerWait(1950);
-//                    }
-//                    GPIO_PORTM_DATA_R = 0x00;
-//                }
-//            }
-//    }
-//            int left = 0, i;
-//            time_t t;
-//            char board[STREAMSIZE] = {0xFF, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81,
-//                    0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81,
-//                    0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0xFF};
-//            char initial_screen[STREAMSIZE] = {0x00, 0x00, 0xFF, 0xA0, 0xE0, 0x00, 0xFF, 0xA0,
-//                            0xF0, 0x0F, 0x00, 0xFF, 0x91, 0x91, 0x00, 0xF1, 0x91, 0x9F,
-//                            0x00, 0xF1, 0x91, 0x9F, 0x00, 0x00, 0xFF, 0x40, 0x00};
-//            // {0x00, 0x18, 0x3C, 0x7E, 0xFF,0x18, 0x18, 0x18, 0x18, 0x18, 0x18,0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18,0x18, 0x18, 0x18, 0x18, 0x18, 0xFF, 0x7E, 0x3C, 0x18, 0x00}; Example Stream used for tests
-//
-//            SYSCTL_RCGCGPIO_R |= (1 << PORTM); // enable clock for port M
-//            while (!(SYSCTL_PRGPIO_R & (1 << PORTM))); // wait for port to be ready
-//            // 0:input 1:output
-////            GPIO_PORTM_DIR_R |= 0xFF;  // PM(7:0) input
-////            GPIO_PORTM_DEN_R |= 0xFF;  // enable pins PM(7:0)
-////
-////            SYSCTL_RCGCGPIO_R |= (1 << PORTL); // enable clock for port L
-////            while (!(SYSCTL_PRGPIO_R & (1 << PORTL))); // wait for port to be ready
-////            GPIO_PORTL_DIR_R |= 0x00;  // PL(0) output
-////            GPIO_PORTL_DEN_R |= 0x01;  // enable pin PL(0)
-
-//
-//        #ifdef S
-//            /* Intializes random number generator */
-//            srand((unsigned) time(&t));
-//            /* Set position based on the size of the board */
-//            int position_x = rand() % STREAMSIZE;
-//            /* Set position based on the 8 bits of the LED */
-//            int position_y = rand() % 8;
-//            /* TODO: Need to keep in mind the walls of the board. */
-//            switch(position_y) {
-//            case 0:
-//                board[position_x - 1] = 0x10;
-//                break;
-//            case 1:
-//                board[position_x - 1] = 0x20;
-//                break;
-//            case 2:
-//                board[position_x - 1] = 0x40;
-//                break;
-//            case 3:
-//                board[position_x - 1] = 0x80;
-//                break;
-//            case 4:
-//                board[position_x - 1] = 0x01;
-//                break;
-//            case 5:
-//                board[position_x - 1] = 0x02;
-//                break;
-//            case 6:
-//                board[position_x - 1] = 0x04;
-//                break;
-//            case 7:
-//                board[position_x - 1] = 0x08;
-//                break;
-//            }
-//            while (1) {
-//                        // If one and not left
-//                        if (GPIO_PORTL_DATA_R && !left)
-//                        {
-//                            // left edge
-//                            left = 1;
-//                            GPIO_PORTM_DATA_R = 0x00;
-//                            for(i = 0; i < STREAMSIZE; i++)
-//                            {
-//                                GPIO_PORTM_DATA_R = board[i];
-//                                timerWait(1950);
-//                            }
-//                            GPIO_PORTM_DATA_R = 0x00;
-//                        }
-//                        // if zero and left
-//                        else if (!GPIO_PORTL_DATA_R && left)
-//                        {
-//                            // right edge
-//                            left = 0;
-//                            GPIO_PORTM_DATA_R = 0x00;;
-//                            for(i = STREAMSIZE-1; i >= 0; i--)
-//                            {
-//                                GPIO_PORTM_DATA_R = board[i];
-//                                timerWait(1950);
-//                            }
-//                            GPIO_PORTM_DATA_R = 0x00;
-//                        }
-//                    }
-//
-//        #endif
-//
-//        #ifdef I
-//            while (1) {
-//                // If one and not left
-//                if (GPIO_PORTL_DATA_R && !left)
-//                {
-//                    // left edge
-//                    left = 1;
-//                    GPIO_PORTM_DATA_R = 0x00;
-//                    for(i = 0; i < STREAMSIZE; i++)
-//                    {
-//                        GPIO_PORTM_DATA_R = initial_screen[i];
-//                        timerWait(1950);
-//                    }
-//                    GPIO_PORTM_DATA_R = 0x00;
-//                }
-//                // if zero and left
-//                else if (!GPIO_PORTL_DATA_R && left)
-//                {
-//                    // right edge
-//                    left = 0;
-//                    GPIO_PORTM_DATA_R = 0x00;;
-//                    for(i = STREAMSIZE-1; i >= 0; i--)
-//                    {
-//                        GPIO_PORTM_DATA_R = initial_screen[i];
-//                        timerWait(1950);
-//                    }
-//                    GPIO_PORTM_DATA_R = 0x00;
-//                }
-//            }
-//        #endif
-
-
-
-
-//char input[10];
-//while(1) {
-//    printf("type: j=left, i=up, l=left, k=down, q=quit\n");
-//    scanf("%s", input);
-//    if(strcmp(input, "i") == 0) updateBoard(s_up);
-//    else if(strcmp(input, "k") == 0) updateBoard(s_down);
-//    else if(strcmp(input, "j") == 0) updateBoard(s_left);
-//    else if(strcmp(input, "l") == 0) updateBoard(s_right);
-//    else if(strcmp(input, "q") == 0) break;
-//    else printf("%s is invalid.\n", input);
-//    //printBoard();
-//    convertBoard();
-//}
-
 }
