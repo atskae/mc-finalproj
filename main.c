@@ -15,36 +15,23 @@
 
 /*interrupt variables*/
 //UART
-volatile unsigned char gucNewData = 0;
 volatile unsigned char gucRxChar = 0;
 
-// RL Signal from Port L(2)
+// RL Signal from Port L(0)
 volatile unsigned char displayed_intro = 0;
-volatile unsigned char left_edge = 0;
+volatile unsigned char left_edge = 0; // used only to display the intro screen
 
-// timer interrupts
-volatile unsigned char time_out = 0; // for general counting
-volatile unsigned char update_board = 0; // timer is trigged at the same intervals
-
+#define PORTD 3
 #define PORTK 9
 #define PORTL 10
 #define PORTM 11
 #define PORTP 13
 
-//#define TMAX 0.01
-//#define FCLK 16.0E6 // CPU frequency
-//#define PRESCALER 2
-
 #define SEGMENT 1000 // us
-//#define S // S(Snake) I(initial screen)
 #define CHARACTERSIZE 5
 #define STREAMSIZE 29
 
-#define NUMROW_LED 8 // number of rows in the LED pendulum display
-//#define NUMCOL_LED 29 // number of columns in the LED pendulum display
-
 char display[NUMCOL_LED]; // each element represent a column in the LED pendulum; msut convert gameBoard to display
-//typedef enum {empty, s_left, s_right, s_up, s_down, food, invalid} object; // invalid is used moveSnake() if collision occurs
 object gameBoard[NUMROW_LED][NUMCOL_LED];
 int snakeLength = 1;
 int tail_pos[2] = {7, 0}; // start at bottom left-most position on the screen
@@ -61,6 +48,7 @@ char initial_screen[STREAMSIZE] = {0x00, 0x00, 0xFF, 0xA0, 0xE0, 0x00, 0xFF, 0xA
 */
 
 void portConfig() {
+
     // Port M controls the pendulum display
     SYSCTL_RCGCGPIO_R |= (1 << PORTM); // enable clock for port M
     while (!(SYSCTL_PRGPIO_R & (1 << PORTM))); // wait for port to be ready
@@ -71,25 +59,31 @@ void portConfig() {
     // Port L(0) controls the left/right signals of the pendulum and the 7-segment display
     SYSCTL_RCGCGPIO_R |= (1 << PORTL); // enable clock for port L
     while (!(SYSCTL_PRGPIO_R & (1 << PORTL))); // wait for port to be ready
-    //GPIO_PORTL_DIR_R |= 0x03;  // PL(0:1) output to the 7-segment display
     GPIO_PORTL_DIR_R &= ~0x01;  // PL(0) input (reads R/L signal)
     GPIO_PORTL_DEN_R |= 0x01;  // enable pin(0)
     // configure interrupts for Port L
     GPIO_PORTL_IM_R &= 0x00; // clear to config interrupts
     GPIO_PORTL_IS_R = 0x0; // interrupt sense ; "0" edge-sensitive, "1" level-sensitive
     GPIO_PORTL_IBE_R = 0x1; // "1" interrupt both edges ; "0" single-edge
-    //GPIO_PORTL_IEV_R |= 0x01; // interrupt event ; "1" rising edges
     GPIO_PORTL_ICR_R |= (1<<0); // interrupt clear
     GPIO_PORTL_RIS_R = 0x0;
     GPIO_PORTL_IM_R |= (1<<0); // allows interrupt to be sent to interrupt controller
     NVIC_EN1_R |= (1<<(53-32));
 
-//    // Port K is a buffer that holds the score (which is sent to the 7-segment display)
-//    SYSCTL_RCGCGPIO_R |= (1 << PORTK); // enable clock
-//    while (!(SYSCTL_PRGPIO_R & (1 << PORTK))); // wait for port to be ready
-//    // 0:input 1:output
-//    GPIO_PORTK_DIR_R |= 0xFF;  // output
-//    GPIO_PORTK_DEN_R |= 0xFF;  // enable pins
+    // Port K is a buffer that holds the score (which is sent to the 7-segment display)
+    SYSCTL_RCGCGPIO_R |= (1 << PORTK); // enable clock
+    while (!(SYSCTL_PRGPIO_R & (1 << PORTK))); // wait for port to be ready
+    // 0:input 1:output
+    GPIO_PORTK_DIR_R |= 0xFF;  // output
+    GPIO_PORTK_DEN_R |= 0xFF;  // enable pins
+
+    // Port D(1:0) are the enable bits for the 7-segment display
+    SYSCTL_RCGCGPIO_R |= (1 << PORTD); // enable clock for port D
+    while (!(SYSCTL_PRGPIO_R & (1 << PORTD))); // wait for port to be ready
+    // "0" = input ; "1" = output
+    GPIO_PORTD_AHB_DIR_R |= 0x3;  // PD(1:0) output
+    GPIO_PORTD_AHB_DEN_R |= 0x3;  // enable pins PD(1:0)
+
 }
 
 void timerConfig() {
@@ -97,23 +91,11 @@ void timerConfig() {
     SYSCTL_RCGCTIMER_R |= 0x1; // activate timer module 0
     while(!(SYSCTL_PRTIMER_R & 0x1)); // wait to be ready
 
-    // Timer 0A ; for general use (can measure any time)
+    // Timer 0A
+    TIMER0_CFG_R   |= 0x4; // 16 bit
     TIMER0_CTL_R   &= ~0x1; // disable timer A for config
     TIMER0_TAMR_R  = 0x1; // down, one-shot
     TIMER0_TAPR_R  = PRESCALER; // prescaler
-    //TIMER0_IMR_R |= 0x01; // enable interrupt to be sent to interrupt controller ; clear interrupt with TIMER0_ICR_R
-   // NVIC_EN0_R |= (1<<19); // allow interrupt controller to receive this interrupt
-
-//    //Timer 0B ; always measures the same (but configurable) time ; used to update the screen at the same intervals
-//    TIMER0_CTL_R    &= ~(1<<8); // disable timer B for config
-//    TIMER0_TBMR_R  = 0x2; // down, periodic timer
-//    TIMER0_TBPR_R  = PRESCALER; // prescaler
-//    TIMER0_IMR_R |= (1<<8); // enable interrupt to be sent to interrupt controller ; clear interrupt with TIMER0_ICR_R
-//    NVIC_EN0_R |= (1<<20); // allow interrupt controller to receive this interrupt
-
-    // timer module 0
-    TIMER0_CFG_R   |= 0x4; // 16 bit
-
 }
 
 void UARTConfig() {
@@ -150,10 +132,11 @@ void sysConfig() {
 }
 
 // Display game score on 4 digit 7-segment display
-// Port L(1:0) are the enable bits for the 7-segment display
+// Port D(1:0) are the enable bits for the 7-segment display
 // Port K serves as a buffer to hold the score for the 7-segment display
 void displayValue(int score) {
-    int digits[4] = {0}; // initialize to 0
+    printf("score %i\n", score);
+    int digits[4] = {0, 0, 0, 0}; // initialize to 0
     int i, scoreAux = score;
 
     // Get digits
@@ -164,9 +147,11 @@ void displayValue(int score) {
 
     // Output digits
 
+    GPIO_PORTK_DATA_R = 0x00;
+
     // First 2 digits
     // Enable: PL(1) = EN(1) := H
-    GPIO_PORTL_DATA_R |= (1 << 1);
+    GPIO_PORTD_AHB_DATA_R |= (1 << 1);
     // Set data
     if (score >= 1000) {
         //printf("digit[3] %d \n", digits[3]);
@@ -178,12 +163,12 @@ void displayValue(int score) {
     }
 
     // Latch mode (disable)
-    GPIO_PORTL_DATA_R &= ~(1 << 1);
-    GPIO_PORTK_DATA_R = 0x00;
+    GPIO_PORTD_AHB_DATA_R &= ~(1 << 1);
+    GPIO_PORTK_DATA_R = 0x00; // clear display value
 
     // Last 2 digits
     // Enable: PL(0) = EN(0) := H
-    GPIO_PORTL_DATA_R |= (1 << 0);
+    GPIO_PORTD_AHB_DATA_R |= (1 << 0);
     // Set data
     if (score >= 10) {
         //printf("digit[1] %d \n", digits[1]);
@@ -194,7 +179,7 @@ void displayValue(int score) {
         GPIO_PORTK_DATA_R |= digits[3];
     }
     // Latch mode (disable)
-    GPIO_PORTL_DATA_R &= ~(1<<0);
+    GPIO_PORTD_AHB_DATA_R &= ~(1<<0);
 }
 
 /*
@@ -301,7 +286,6 @@ void addFood() {
         gameBoard[food_pos[0]][food_pos[1]] = empty;
     }
 
-    // rand() % (max_number + 1 - minimum_number) + minimum_number
     while(!placed) {
         // choose a random coordiante on the board
         row = rand() % NUMROW_LED;
@@ -320,7 +304,7 @@ void addFood() {
 // count = number of pixels of the snake that we have seen already; (row, col) = current location on board
 object moveSnake(int count, int row, int col, object dir) {
 
-    printf("moveSnake() count=%i, row=%i, col=%i\n", count, row, col);
+//    printf("moveSnake() count=%i, row=%i, col=%i\n", count, row, col);
     // base case
     if(count == snakeLength) { // in the position in front of the snake's head
 
@@ -353,7 +337,7 @@ object moveSnake(int count, int row, int col, object dir) {
 
             printf("+1\n");
             snakeLength++;
-              //displayValue(++snakeLength); // display new score onto 7-segment display
+            displayValue(snakeLength); // display new score onto 7-segment display
             incrLength = 1;
             gameBoard[new_row][new_col] = dir;
             return dir;
@@ -445,14 +429,12 @@ object moveSnake(int count, int row, int col, object dir) {
 }
 
 void updateBoard(object dir) {
-    printf("updateBoard() dir = ");
-    printDir(dir);
+    //printf("updateBoard() dir = ");
+    //printDir(dir);
 
     object new_dir = moveSnake(1, tail_pos[0], tail_pos[1], dir);
     if(new_dir == invalid) exit(0);
-
-    //gameBoard[new_row][new_col] = new_dir;
-
+ 
     if(incrLength){
         // reset
         incrLength = 0;
@@ -501,21 +483,16 @@ void clearBoard() {
 void initialScreen() {
     int i;
      while (1) {
-           // If one and not left
-           if (left_edge) {
-               // left edge
+           if(left_edge) { 
                GPIO_PORTM_DATA_R = 0x00;
-               for(i = 0; i < STREAMSIZE; i++)
-               {
+               for(i = 0; i < STREAMSIZE; i++) {
                    GPIO_PORTM_DATA_R = initial_screen[i];
                    timerWait(1950);
                }
                GPIO_PORTM_DATA_R = 0x00;
            }
-           if(gucRxChar == '1') {
-               break;
-           }
-       }
+           if(gucRxChar == '1')  break; 
+    } // while ; end
 }
 
 void newGame() {
@@ -532,6 +509,7 @@ void newGame() {
     tail_pos[1] = 0;
     // reset length
     snakeLength = 1;
+    displayValue(snakeLength);
 
     // place food on random position on board
     addFood();

@@ -4,7 +4,7 @@
 #include "math.h"
 
 object direction = s_right;
-int loops = 0;
+int loops = 0; // the number of times to swing left to right of the same display image before updating the image
 
 void IntHandlerUART6(void) {
     if (UART6_MIS_R & (1<<4)) {  // check whether UART6 Rx interrupt
@@ -29,7 +29,6 @@ void IntHandlerUART6(void) {
 	    updateBoard(direction);
 	    convertBoard();
         UART6_DR_R = 0;
-        //gucNewData = 1;
     }
 }
 
@@ -49,7 +48,6 @@ void IntHandlerRLSignal(void) {
 
         // draw the intro screen
         if(!displayed_intro) {
-
             if(GPIO_PORTL_DATA_R & 0x1) left_edge = 1;
             else left_edge = 0;
 
