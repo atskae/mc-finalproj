@@ -7,6 +7,11 @@ extern volatile unsigned char displayed_intro;
 extern volatile unsigned char gucRxChar;
 //RL Signal for intro screen only
 extern volatile unsigned char left_edge;
+extern volatile unsigned char game_over;
+
+#define SEGMENT 1000 // us
+#define CHARACTERSIZE 5
+#define STREAMSIZE 29
 
 #define TMAX 0.01
 #define FCLK 16.0E6 // CPU frequency

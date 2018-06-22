@@ -20,6 +20,7 @@ volatile unsigned char gucRxChar = 0;
 // RL Signal from Port L(0)
 volatile unsigned char displayed_intro = 0;
 volatile unsigned char left_edge = 0; // used only to display the intro screen
+volatile unsigned char game_over = 0;
 
 #define PORTD 3
 #define PORTK 9
@@ -27,19 +28,15 @@ volatile unsigned char left_edge = 0; // used only to display the intro screen
 #define PORTM 11
 #define PORTP 13
 
-#define SEGMENT 1000 // us
-#define CHARACTERSIZE 5
-#define STREAMSIZE 29
-
 char display[NUMCOL_LED]; // each element represent a column in the LED pendulum; msut convert gameBoard to display
 object gameBoard[NUMROW_LED][NUMCOL_LED];
 int snakeLength = 1;
 int tail_pos[2] = {7, 0}; // start at bottom left-most position on the screen
 int food_pos[2] = {0, 0}; // position of food ; variable used to remove food in constant time
 char incrLength = 0; // if snake gets food, this is set to "1"
-char initial_screen[STREAMSIZE] = {0x00, 0x00, 0xFF, 0xA0, 0xE0, 0x00, 0xFF, 0xA0,
-                                0xF0, 0x0F, 0x00, 0xFF, 0x91, 0x91, 0x00, 0xF1, 0x91, 0x9F,
-                                0x00, 0xF1, 0x91, 0x9F, 0x00, 0x00, 0xFF, 0x40, 0x00};
+//char initial_screen[STREAMSIZE] = {0x00, 0x00, 0xFF, 0xA0, 0xE0, 0x00, 0xFF, 0xA0,
+//                                0xF0, 0x0F, 0x00, 0xFF, 0x91, 0x91, 0x00, 0xF1, 0x91, 0x9F,
+//                                0x00, 0xF1, 0x91, 0x9F, 0x00, 0x00, 0xFF, 0x40, 0x00};
 
 /*
 
@@ -228,14 +225,14 @@ void convertBoard() {
         display[col] = d;
     }
 
-    // test print
-    for(shift=NUMROW_LED-1; shift>=0; shift--) {
-        for(col=0; col<NUMCOL_LED; col++) { // for each bit
-            if(display[col] & (0x1 << shift)) printf("*");
-            else printf(" ");
-        }
-        printf("\n");
-    }
+//    // test print
+//    for(shift=NUMROW_LED-1; shift>=0; shift--) {
+//        for(col=0; col<NUMCOL_LED; col++) { // for each bit
+//            if(display[col] & (0x1 << shift)) printf("*");
+//            else printf(" ");
+//        }
+//        printf("\n");
+//    }
 
 }
 
@@ -336,11 +333,16 @@ object moveSnake(int count, int row, int col, object dir) {
         else if(gameBoard[new_row][new_col] == food) {
 
             printf("+1\n");
-            snakeLength++;
-            displayValue(snakeLength); // display new score onto 7-segment display
+            //snakeLength++;
+            displayValue(++snakeLength); // display new score onto 7-segment display
             incrLength = 1;
             gameBoard[new_row][new_col] = dir;
-            return dir;
+            //return dir;
+            if(gameBoard[row][col] != dir) {
+                gameBoard[row][col] = dir; // if the direction is different from the previous
+                return dir;
+            }
+            else return gameBoard[row][col];  // return the old direction to the callee before callee overwrites the position
         }
          else if(gameBoard[new_row][new_col] == empty) {
             gameBoard[new_row][new_col] = dir;
@@ -433,7 +435,11 @@ void updateBoard(object dir) {
     //printDir(dir);
 
     object new_dir = moveSnake(1, tail_pos[0], tail_pos[1], dir);
-    if(new_dir == invalid) exit(0);
+    if(new_dir == invalid) {
+        game_over = 1;
+        return;
+        //exit(0);
+    }
  
     if(incrLength){
         // reset
@@ -462,7 +468,7 @@ void updateBoard(object dir) {
         }
 
         // empty the snake at the current tail position
-    printf("tail setting (%i %i) empty\n", tail_pos[0], tail_pos[1]);
+        // printf("tail setting (%i %i) empty\n", tail_pos[0], tail_pos[1]);
         gameBoard[tail_pos[0]][tail_pos[1]] = empty;
         // update tail position
         tail_pos[0] = new_row;
@@ -481,17 +487,8 @@ void clearBoard() {
 }
 
 void initialScreen() {
-    int i;
      while (1) {
-           if(left_edge) { 
-               GPIO_PORTM_DATA_R = 0x00;
-               for(i = 0; i < STREAMSIZE; i++) {
-                   GPIO_PORTM_DATA_R = initial_screen[i];
-                   timerWait(1950);
-               }
-               GPIO_PORTM_DATA_R = 0x00;
-           }
-           if(gucRxChar == '1')  break; 
+         if(gucRxChar == '1')  break;
     } // while ; end
 }
 
@@ -499,6 +496,7 @@ void newGame() {
 
     initialScreen();
     GPIO_PORTM_DATA_R = 0x0;
+    displayed_intro = 1;
 
     // init all positions on gameBoard to empty
     clearBoard();
@@ -516,10 +514,9 @@ void newGame() {
     gameBoard[food_pos[0]][food_pos[1]] = food;
 
     printf("Initialized board\n");
-    printBoard();
+    //printBoard();
     convertBoard();
 
-    displayed_intro = 1;
 }
 
 int main(void) {
